@@ -110,8 +110,9 @@ app.on('ready', async () => {
     width: 800,
     height: 600,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
     }
   });
 
@@ -247,8 +248,7 @@ app.on('ready', async () => {
       </div>
 
       <script>
-        const { ipcRenderer } = require('electron');
-        ipcRenderer.on('status-update', (event, data) => {
+        window.electronAPI.onStatusUpdate((data) => {
           document.getElementById('ws-url').innerText = data.wsUrl || 'Not available';
           document.getElementById('folder-path').innerText = 'Folder Path: ' + (data.folderPath || 'Not set');
           document.getElementById('device-list').innerHTML = data.connectedDevices.length
@@ -258,13 +258,13 @@ app.on('ready', async () => {
             ? data.fileStatus.map(file => '<li>' + file + '</li>').join('')
             : '<li>None</li>';
         });
-  
+
         window.requestFolder = () => {
-          ipcRenderer.send('request-folder');
+          window.electronAPI.requestFolder();
         };
 
         // **Added IPC communication for mode switching**
-        ipcRenderer.on('switch-mode', (event, mode) => {
+        window.electronAPI.onSwitchMode((mode) => {
           if (mode === 'drag-drop') {
             document.getElementById('main-content').style.display = 'none';
             document.getElementById('drag-drop-content').style.display = 'block';
@@ -297,13 +297,13 @@ app.on('ready', async () => {
           const files = event.dataTransfer.files;
           if (files.length > 0) {
             const filePath = files[0].path;
-            ipcRenderer.send('file-dropped', filePath);
+            window.electronAPI.fileDropped(filePath);
           }
         });
 
         // **Added back button functionality**
         document.getElementById('back-button').addEventListener('click', () => {
-          ipcRenderer.send('switch-to-normal');
+          window.electronAPI.switchToNormal();
         });
       </script>
     </body>
