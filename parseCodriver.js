@@ -133,21 +133,35 @@ function exportJsonResults(pacenotes, outputFilePath) {
     fs.writeFileSync(outputFilePath, JSON.stringify(pacenotes, null, 2), "utf-8");
     console.log(`Pacenotes exported to JSON: ${outputFilePath}`);
 }
+// Allow running from the command line with user-provided paths
+if (require.main === module) {
+    const [baseDir, outputFilePath] = process.argv.slice(2);
 
-// Example usage
-try {
-    const baseDir = "/Users/macmini/Richard Burns Rally/Plugins/Pacenote/config/pacenotes/packages"; // Adjust to the actual directory
-    const outputFilePath = "/Users/macmini/Richard Burns Rally/Plugins/Pacenote/config/pacenotes.json";
+    if (!baseDir || !outputFilePath) {
+        console.error("Usage: node parseCodriver.js <baseDir> <outputFilePath>");
+        process.exit(1);
+    }
 
-    console.log(`Starting processing for directory: ${baseDir}`);
-    const pacenotes = processAllIniFiles(baseDir);
+    try {
+        console.log(`Starting processing for directory: ${baseDir}`);
+        const pacenotes = processAllIniFiles(baseDir);
 
-    console.log("Aggregated PACENOTES Data:");
-    console.log(JSON.stringify(pacenotes, null, 2));
+        console.log("Aggregated PACENOTES Data:");
+        console.log(JSON.stringify(pacenotes, null, 2));
 
-    exportJsonResults(pacenotes, outputFilePath);
+        exportJsonResults(pacenotes, outputFilePath);
 
-    console.log("Processing complete.");
-} catch (error) {
-    console.error("Error:", error.message);
+        console.log("Processing complete.");
+    } catch (error) {
+        console.error("Error:", error.message);
+        process.exit(1);
+    }
 }
+
+module.exports = {
+    parsePacenoteFile,
+    determineTypeFromPath,
+    processIniFile,
+    processAllIniFiles,
+    exportJsonResults,
+};
