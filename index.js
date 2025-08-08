@@ -3,6 +3,7 @@ const os = require('os');
 const chokidar = require('chokidar');
 const WebSocket = require('ws');
 const fs = require('fs');
+const fsPromises = fs.promises;
 const ini = require('ini');
 const bonjour = require('bonjour')();
 const path = require('path');
@@ -41,21 +42,27 @@ const wsUrl = `ws://${localIP}:8080`; // Define WebSocket URL using the local IP
 bonjour.publish({ name: 'Local Sync WebSocket', type: 'ws', port: 8080 });
 
 // Load configuration file
-function loadConfig() {
+async function loadConfig() {
   try {
-    if (!fs.existsSync(configFilePath)) {
+    try {
+      await fsPromises.access(configFilePath);
+    } catch {
       const defaultConfig = { folderPath: null };
-      fs.writeFileSync(configFilePath, JSON.stringify(defaultConfig, null, 2));
+      await fsPromises.writeFile(
+        configFilePath,
+        JSON.stringify(defaultConfig, null, 2)
+      );
       console.log('Config file created with default settings.');
     }
-    
-    const config = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
+
+    const configContent = await fsPromises.readFile(configFilePath, 'utf-8');
+    const config = JSON.parse(configContent);
     folderPath = config.folderPath || null;
     if (folderPath) {
       setupDatabase(folderPath); // Initialize database if folderPath is set
     }
   } catch (error) {
-    console.error('Error loading or creating config file:', error);
+    console.error('Error loading or creating config file:', configFilePath, error);
   }
 }
 
@@ -83,14 +90,21 @@ function setupDatabase(basePath) {
   });
 }
 
-function saveConfig() {
+async function saveConfig() {
   const config = { folderPath };
-  fs.writeFileSync(configFilePath, JSON.stringify(config, null, 2));
+  try {
+    await fsPromises.writeFile(
+      configFilePath,
+      JSON.stringify(config, null, 2)
+    );
+  } catch (error) {
+    console.error('Error saving config file:', configFilePath, error);
+  }
 }
 
-app.on('ready', () => {
+app.on('ready', async () => {
   configFilePath = path.join(app.getPath('userData'), 'config.json');
-  loadConfig();
+  await loadConfig();
 
   mainWindow = new BrowserWindow({
     width: 800,
@@ -306,7 +320,7 @@ app.on('ready', () => {
 
     if (result) {
       folderPath = result[0];
-      saveConfig();
+      await saveConfig();
       setupDatabase(folderPath); // Initialize database with the selected folder path
       startWatchingFolder(folderPath);
       updateStatus();
@@ -317,7 +331,7 @@ app.on('ready', () => {
   ipcMain.on('file-dropped', (event, filePath) => {
     fs.readFile(filePath, 'utf-8', (err, data) => {
       if (err) {
-        console.error('Error reading file:', err);
+        console.error('Error reading file:', filePath, err);
         return;
       }
 
@@ -362,18 +376,31 @@ function startWatchingFolder(rootPath) {
 
   watcher.on('add', filePath => {
     console.log(`File added: ${filePath}`);
-    broadcastFileToClients(filePath, rootPath); // Pass rootPath to make file paths relative
+    broadcastFileToClients(filePath, rootPath).catch(err => {
+      console.error('Error broadcasting added file:', filePath, err);
+    }); // Pass rootPath to make file paths relative
     updateStatus();
   });
   watcher.on('change', filePath => {
     console.log(`File changed: ${filePath}`);
-    broadcastFileToClients(filePath, rootPath);
+    broadcastFileToClients(filePath, rootPath).catch(err => {
+      console.error('Error broadcasting changed file:', filePath, err);
+    });
     updateStatus();
   });
   watcher.on('unlink', filePath => {
     console.log(`File removed: ${filePath}`);
     sentFiles.delete(filePath); // Remove from sent files set if deleted
     updateStatus();
+  });
+  watcher.on('error', error => {
+    console.error('Watcher error:', error);
+    watcher
+      .close()
+      .then(() => {
+        setTimeout(() => startWatchingFolder(rootPath), 5000);
+      })
+      .catch(err => console.error('Error restarting watcher:', err));
   });
 }
 
@@ -396,7 +423,9 @@ function startWatchingFolder(rootPath) {
  * - Non-`.ini` files are ignored.
  * - Files outside the MyPacenotes folder or already sent are skipped.
  */
-function broadcastFileToClients(filePath, rootPath) {
+
+async function broadcastFileToClients(filePath, rootPath) {
+
   const pacenoteRoot = path.join(rootPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes'); // Root path of MyPacenotes
 
   if (!filePath.endsWith('.ini')) {
@@ -419,11 +448,10 @@ function broadcastFileToClients(filePath, rootPath) {
       return;
     }
 
-    const fileContent = fs.readFileSync(filePath, 'utf-8');
+    const fileContent = await fsPromises.readFile(filePath, 'utf-8');
     const parsedContent = ini.parse(fileContent);
-    const stats = fs.statSync(filePath);
-    const lastModified = stats.mtime.toISOString(); 
-    //console.log(`Modified: ${lastModified}`);
+    const stats = await fsPromises.stat(filePath);
+    const lastModified = stats.mtime.toISOString();
 
     const jsonContent = {
       path: relativePath, // Only the relative path within MyPacenotes
@@ -442,7 +470,7 @@ function broadcastFileToClients(filePath, rootPath) {
     sentFiles.add(filePath);
     updateStatus();
   } catch (error) {
-    console.error('Error reading or parsing .ini file:', error);
+    console.error('Error reading or parsing .ini file:', filePath, error);
   }
 }
 
@@ -475,8 +503,12 @@ wss.on('connection', (ws) => {
         if (!clientFiles[deviceId]) {
           clientFiles[deviceId] = new Set();
         }
-        sendAllFilesToClient(deviceId)
-        sendMissingFiles(deviceId);
+        sendAllFilesToClient(deviceId).catch(err => {
+          console.error('Error sending all files to client', deviceId, err);
+        });
+        sendMissingFiles(deviceId).catch(err => {
+          console.error('Error sending missing files to client', deviceId, err);
+        });
         updateStatus();
       } else {
         console.log('Received message without deviceId:', message);
@@ -524,29 +556,35 @@ wss.on('connection', (ws) => {
  * - The requested car slot or `RSFCarID` is absent.
  * - Database query errors.
  */
-function getStageTimesAfterDate(stageId, slotId, folderPath, callback) {
+async function getStageTimesAfterDate(stageId, slotId, folderPath, callback) {
 
     const carsIniPath = path.join(folderPath, 'Cars', 'Cars.ini');
 
-    if (!fs.existsSync(carsIniPath)) {
-        return { error: `Cars.ini file not found at path: ${carsIniPath}` };
+    let config;
+    try {
+        const iniContent = await fsPromises.readFile(carsIniPath, 'utf-8');
+        config = ini.parse(iniContent);
+    } catch (error) {
+        console.error('Error reading Cars.ini for slot', slotId, 'at', carsIniPath, error);
+        callback(null);
+        return;
     }
 
-    // Parse the Cars.ini file
-    const config = ini.parse(fs.readFileSync(carsIniPath, 'utf-8'));
     const section = `Car0${slotId}`;
 
     // Check if the section exists
     if (!config[section]) {
-        return { error: `Car slot ID ${slotId} not found in Cars.ini` };
+        callback({ error: `Car slot ID ${slotId} not found in Cars.ini` });
+        return;
     }
 
     // Check if the RSFCarID is present
     if (!config[section].RSFCarID) {
-        return { error: `RSFCarID not found for slot ID ${slotId}` };
+        callback({ error: `RSFCarID not found for slot ID ${slotId}` });
+        return;
     }
 
-    carId = parseInt(config[section].RSFCarID, 10);
+    const carId = parseInt(config[section].RSFCarID, 10);
 
   console.log(`Executing query for car ${carId} on stage ${stageId}`);
 
@@ -586,7 +624,7 @@ LIMIT 1;
   // Execute the query
   db.all(query, [stageId, carId], (err, rows) => {
       if (err) {
-          console.error('Database error:', err);
+          console.error('Database error for stage', stageId, 'car', carId, err);
           callback(null); // Pass null to the callback in case of error
           return;
       }
@@ -598,7 +636,7 @@ LIMIT 1;
 
 
 // Function to send all available .ini files to a specific client
-function sendAllFilesToClient(deviceId) {
+async function sendAllFilesToClient(deviceId) {
   const client = clients[deviceId];
   if (!client) return;
 
@@ -606,32 +644,35 @@ function sendAllFilesToClient(deviceId) {
   clientFiles[deviceId] = new Set();
 
   const pacenotePath = path.join(folderPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes');
-  const files = fs.readdirSync(pacenotePath);
+  let files;
+  try {
+    files = await fsPromises.readdir(pacenotePath);
+  } catch (error) {
+    console.error('Error reading directory:', pacenotePath, error);
+    return;
+  }
 
-  files.forEach((file) => {
+  for (const file of files) {
     const filePath = path.join(pacenotePath, file);
-    if (file.endsWith('.ini') && fs.existsSync(filePath)) {
-      const relativePath = path.relative(pacenotePath, filePath);
-      const fileContent = fs.readFileSync(filePath, 'utf-8');
-      const parsedContent = ini.parse(fileContent);
+    if (file.endsWith('.ini')) {
+      try {
+        const fileContent = await fsPromises.readFile(filePath, 'utf-8');
+        const parsedContent = ini.parse(fileContent);
+        const stats = await fsPromises.stat(filePath);
+        const lastModified = stats.mtime.toISOString();
+        const relativePath = path.relative(pacenotePath, filePath);
 
-
-      const stats = fs.statSync(filePath);
-      const lastModified = stats.mtime.toISOString(); 
-
-
-      //console.log(`Modified: ${lastModified} for file ${relativePath}`);
-
-
-      const jsonContent = {
-        path: relativePath,
-        data: parsedContent,
-        date: lastModified
-      };
-      console.log(jsoncontent.date);
-      sendToClient(deviceId, jsonContent); // Send each .ini file to the client
+        const jsonContent = {
+          path: relativePath,
+          data: parsedContent,
+          date: lastModified
+        };
+        sendToClient(deviceId, jsonContent); // Send each .ini file to the client
+      } catch (error) {
+        console.error('Error processing file:', filePath, error);
+      }
     }
-  });
+  }
 
   console.log(`Resent all available files to device ${deviceId}`);
 }
@@ -645,25 +686,29 @@ function sendToClient(deviceId, jsonContent) {
   }
 }
 
-function sendMissingFiles(deviceId) {
-  const client = clients[deviceId];
+async function sendMissingFiles(deviceId) {
+  if (!clients[deviceId]) return;
   if (!clientFiles[deviceId]) clientFiles[deviceId] = new Set();
 
-  sentFiles.forEach(filePath => {
+  for (const filePath of sentFiles) {
     const relativePath = path.relative(folderPath, filePath);
-    const stats = fs.statSync(filePath);
-    const lastModified = stats.mtime.toISOString(); 
+    try {
+      const stats = await fsPromises.stat(filePath);
+      const lastModified = stats.mtime.toISOString();
 
-
-    if (!clientFiles[deviceId].has(filePath)) {
-      sendToClient(deviceId, {
-        path: relativePath,
-        data: ini.parse(fs.readFileSync(filePath, 'utf-8')),
-        date: lastModified
-      });
-      clientFiles[deviceId].add(filePath);
+      if (!clientFiles[deviceId].has(filePath)) {
+        const dataContent = await fsPromises.readFile(filePath, 'utf-8');
+        sendToClient(deviceId, {
+          path: relativePath,
+          data: ini.parse(dataContent),
+          date: lastModified
+        });
+        clientFiles[deviceId].add(filePath);
+      }
+    } catch (error) {
+      console.error('Error sending missing file:', filePath, error);
     }
-  });
+  }
 }
 
 app.on('before-quit', () => {
