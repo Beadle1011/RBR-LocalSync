@@ -358,6 +358,18 @@ app.on('ready', async () => {
   }
 });
 
+/**
+ * Start watching the MyPacenotes directory for file changes and broadcast updates
+ * to all connected clients.
+ *
+ * Side effects:
+ * - Creates a persistent chokidar watcher.
+ * - Triggers {@link broadcastFileToClients} and {@link updateStatus} when files change.
+ *
+ * @param {string} rootPath - Absolute path to the RBR installation directory.
+ * @returns {void}
+ * @throws {Error} Chokidar emits an error if the MyPacenotes directory is missing or unreadable.
+ */
 function startWatchingFolder(rootPath) {
   const pacenotePath = path.join(rootPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes'); // Define pacenote folder path
   const watcher = chokidar.watch(pacenotePath, { persistent: true });
@@ -394,7 +406,26 @@ function startWatchingFolder(rootPath) {
 
 // Rest of your WebSocket and database functions remain unchanged
 
+/**
+ * Read a pacenote `.ini` file and broadcast its contents to all connected clients.
+ *
+ * Side effects:
+ * - Reads from the file system.
+ * - Sends JSON data over WebSockets.
+ * - Updates global tracking structures (`clientFiles`, `sentFiles`).
+ *
+ * @param {string} filePath - Absolute path to the file to broadcast.
+ * @param {string} rootPath - Root directory used to compute the relative path for clients.
+ * @returns {void}
+ * @throws {Error} If reading or parsing the `.ini` file fails.
+ *
+ * Error conditions:
+ * - Non-`.ini` files are ignored.
+ * - Files outside the MyPacenotes folder or already sent are skipped.
+ */
+
 async function broadcastFileToClients(filePath, rootPath) {
+
   const pacenoteRoot = path.join(rootPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes'); // Root path of MyPacenotes
 
   if (!filePath.endsWith('.ini')) {
@@ -506,6 +537,25 @@ wss.on('connection', (ws) => {
   });
 });
 
+/**
+ * Retrieve the fastest stage time for a given stage and car slot after reading the
+ * corresponding `Cars.ini` entry.
+ *
+ * Side effects:
+ * - Reads the `Cars.ini` configuration file to determine the car ID.
+ * - Performs a SQLite query against `raceStatDB.sqlite3`.
+ *
+ * @param {number} stageId - Identifier of the stage to query.
+ * @param {number} slotId - Car slot ID used to look up the RSF car ID.
+ * @param {string} folderPath - Root game folder containing `Cars.ini` and the database.
+ * @param {(rows: object[]|null) => void} callback - Receives query results or `null` on database error.
+ * @returns {{error: string}|undefined} Error object when validation fails; otherwise undefined and results are passed to the callback.
+ *
+ * Error conditions:
+ * - `Cars.ini` is missing.
+ * - The requested car slot or `RSFCarID` is absent.
+ * - Database query errors.
+ */
 async function getStageTimesAfterDate(stageId, slotId, folderPath, callback) {
 
     const carsIniPath = path.join(folderPath, 'Cars', 'Cars.ini');
