@@ -9,7 +9,8 @@
     "package-win": "electron-packager . Pacenote Sync --platform=win32 --arch=x64 --out=release-builds --icon=assets/icon.ico",
     "dist": "electron-builder --win",
     "build": "electron-builder",
-    "test": "node --test"
+    "test": "node --test",
+    "read-car-id": "node readCarIdCli.js"
   },
   "build": {
     "appId": "pacenotesync.app.id",
