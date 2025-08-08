@@ -8,7 +8,8 @@
     "start": "electron .",
     "package-win": "electron-packager . Pacenote Sync --platform=win32 --arch=x64 --out=release-builds --icon=assets/icon.ico",
     "dist": "electron-builder --win",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "test": "node --test"
   },
   "build": {
     "appId": "pacenotesync.app.id",
