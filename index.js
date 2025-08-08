@@ -13,6 +13,7 @@ const clients = {}; // Store WebSocket clients by device ID
 const clientFiles = {}; // Track received files per client
 const sentFiles = new Set(); // Track globally sent files
 let folderPath = null;
+let isValidPath = false;
 let configFilePath; // Set this after app is ready
 let db; // Initialize db variable here
 
@@ -40,20 +41,35 @@ const wsUrl = `ws://${localIP}:8080`; // Define WebSocket URL using the local IP
 // Advertise service on local network using bonjour
 bonjour.publish({ name: 'Local Sync WebSocket', type: 'ws', port: 8080 });
 
+function validateFolderPath(basePath) {
+  if (!basePath) return false;
+  const requiredDir = path.join(basePath, 'Plugins', 'NGPCarMenu', 'MyPacenotes');
+  try {
+    return fs.statSync(requiredDir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 // Load configuration file
 function loadConfig() {
   try {
     if (!fs.existsSync(configFilePath)) {
-      const defaultConfig = { folderPath: null };
+      const defaultConfig = { folderPath: null, isValidPath: false };
       fs.writeFileSync(configFilePath, JSON.stringify(defaultConfig, null, 2));
       console.log('Config file created with default settings.');
     }
-    
+
     const config = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
     folderPath = config.folderPath || null;
-    if (folderPath) {
-      setupDatabase(folderPath); // Initialize database if folderPath is set
+    isValidPath = config.isValidPath || false;
+    if (validateFolderPath(folderPath)) {
+      isValidPath = true;
+      setupDatabase(folderPath); // Initialize database if folderPath is set and valid
+    } else {
+      isValidPath = false;
     }
+    saveConfig();
   } catch (error) {
     console.error('Error loading or creating config file:', error);
   }
@@ -84,8 +100,32 @@ function setupDatabase(basePath) {
 }
 
 function saveConfig() {
-  const config = { folderPath };
+  const config = { folderPath, isValidPath };
   fs.writeFileSync(configFilePath, JSON.stringify(config, null, 2));
+}
+
+function promptForFolderSelection() {
+  let validSelection = false;
+  while (!validSelection) {
+    const result = dialog.showOpenDialogSync(mainWindow, {
+      properties: ['openDirectory']
+    });
+    if (!result) {
+      break;
+    }
+    const selectedPath = result[0];
+    if (validateFolderPath(selectedPath)) {
+      folderPath = selectedPath;
+      isValidPath = true;
+      saveConfig();
+      setupDatabase(folderPath);
+      startWatchingFolder(folderPath);
+      updateStatus();
+      validSelection = true;
+    } else {
+      dialog.showErrorBox('Invalid RBR Folder', 'Selected folder does not contain Plugins/NGPCarMenu/MyPacenotes.');
+    }
+  }
 }
 
 app.on('ready', () => {
@@ -299,18 +339,8 @@ app.on('ready', () => {
   mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
   
 
-  ipcMain.on('request-folder', async () => {
-    const result = dialog.showOpenDialogSync(mainWindow, {
-      properties: ['openDirectory']
-    });
-
-    if (result) {
-      folderPath = result[0];
-      saveConfig();
-      setupDatabase(folderPath); // Initialize database with the selected folder path
-      startWatchingFolder(folderPath);
-      updateStatus();
-    }
+  ipcMain.on('request-folder', () => {
+    promptForFolderSelection();
   });
 
   // **Added listener for 'file-dropped' event**
@@ -335,14 +365,15 @@ app.on('ready', () => {
     mainWindow.webContents.send('switch-mode', 'normal');
   });
 
-  if (folderPath) {
-    startWatchingFolder(folderPath);
-  } else {
-    mainWindow.webContents.on('did-finish-load', () => {
-      mainWindow.webContents.send('status-update', { folderPath: 'Not set', wsUrl });
-    });
-  }
-});
+    if (isValidPath && folderPath) {
+      startWatchingFolder(folderPath);
+    } else {
+      mainWindow.webContents.on('did-finish-load', () => {
+        mainWindow.webContents.send('status-update', { folderPath: 'Not set', wsUrl });
+      });
+      promptForFolderSelection();
+    }
+  });
 
 function startWatchingFolder(rootPath) {
   const pacenotePath = path.join(rootPath, 'Plugins', 'NGPCarMenu', 'MyPacenotes'); // Define pacenote folder path
