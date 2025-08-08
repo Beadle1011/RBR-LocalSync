@@ -712,6 +712,16 @@ async function sendMissingFiles(deviceId) {
 }
 
 app.on('before-quit', () => {
+  if (db) {
+    db.close((err) => {
+      if (err) {
+        console.error('Error closing database:', err.message);
+      } else {
+        console.log('Database connection closed.');
+      }
+    });
+  }
+
   bonjour.unpublishAll(() => {
     bonjour.destroy();
   });
